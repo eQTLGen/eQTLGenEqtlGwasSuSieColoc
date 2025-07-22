@@ -132,6 +132,28 @@ process ColocLbf {
 }
 
 
+process ColocLbfLean {
+    scratch '$TMPDIR'
+
+    tag "${gene}"
+    input:
+        tuple path(overlapfile), path(gwas_ch), val(coloc_th), val(full_output), path(gene_names), path(ref), path(eqtl_paths), path(gwas_paths)
+    output:
+        path("*_coloc_results.txt")
+
+    shell:
+        """
+        Coloc_LBF_lean.R \
+        --overlap_file EqtlGwasOverlaps.txt \
+        --coloc_threshold ${coloc_th} \
+        --gene_names ${gene_names} \
+        --reference ${ref} \
+        --full_results ${full_output}
+        """
+}
+
+
+
 workflow UNTAR {
     take:
         data
@@ -208,6 +230,18 @@ workflow COLOCLBF {
 
     main:
         ColocLbf_output_ch = ColocLbf(data)
+
+    emit:
+        ColocLbf_output_ch
+}
+
+
+workflow COLOCLBFLEAN {
+    take:
+        data
+
+    main:
+        ColocLbf_output_ch = ColocLbfLean(data)
 
     emit:
         ColocLbf_output_ch

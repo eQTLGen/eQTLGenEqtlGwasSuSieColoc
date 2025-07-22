@@ -9,8 +9,10 @@ library(dplyr)
 library(argparse)
 library(Rfast)
 library(IGUtilityPackage)
+library(duckdbfs)
 
 set.seed(8)
+options(scipen = 999)
 
 setDTthreads(1)
 parser <- ArgumentParser(description = "Run finamap analysis for GWAS.")
@@ -91,7 +93,7 @@ message("Reading MAF file...done!")
 
 # LD matrix
 message("Opening LD file...")
-ld_dataset <- arrow::open_dataset(args$ld_folder)
+ld_dataset <- duckdbfs::open_dataset(args$ld_folder)
 message("Opening LD file...done!")
 
 for (i in 1:length(locus_files)) {
@@ -120,6 +122,9 @@ for (i in 1:length(locus_files)) {
 
   start.time <- Sys.time()
 
+  message(paste0("Removing variants with Beta == 0.0 ", nrow(locus[beta == 0])))
+  locus <- locus[beta != 0]
+
   temp_chr <- as.integer(unique(locus$chromosome))
   # temp_start <- min(as.integer(locus$bp))
   # temp_end <- max(as.integer(locus$bp))
@@ -140,7 +145,7 @@ for (i in 1:length(locus_files)) {
     locus$variant_index <- as.character(locus$variant_index)
     locus <- locus[variant_index %in% rownames(ld_mat)]
 
-    ld_mat <- ld_mat[order(as.integer(rownames(ld_mat))), order(as.integer(colnames(ld_mat)))]
+    ld_mat <- ld_mat[order(as.integer(rownames(ld_mat))), order(as.integer(colnames(ld_mat))), drop=F]
     locus <- locus[order(as.integer(variant_index))]
 
     # Remove sumstat variants that are not in LD matrix.
@@ -149,6 +154,11 @@ for (i in 1:length(locus_files)) {
 
     print(locus[duplicated(variant_index)])
     print(dim(ld_mat))
+
+    if (ncol(ld_mat) == 0) {
+      message("Fine-mapping did not succeed. Locus is empty (after filtering)!")
+      next
+    }
 
     # Compare Zs 
     cond_z <- kriging_rss(locus$beta / locus$se, ld_mat, n = median(locus$N))
@@ -161,9 +171,14 @@ for (i in 1:length(locus_files)) {
     remove_outlier <- nrow(locus[Ps <= (0.05 / nrow(locus))])
 
 
-    ld_mat <- ld_mat[Ps > (0.05 / nrow(locus)), Ps > (0.05 / nrow(locus))]
+    ld_mat <- ld_mat[Ps > (0.05 / nrow(locus)), Ps > (0.05 / nrow(locus)), drop=F]
     locus <- locus[Ps > (0.05 / nrow(locus))]
-    
+
+    if (ncol(ld_mat) == 0) {
+      message("Fine-mapping did not succeed. Locus is empty (after filtering)!")
+      next
+    }
+
     maf2 <- maf[as.character(variant_index) %in% as.character(colnames(ld_mat))]
 
     print(nrow(locus))
@@ -173,7 +188,7 @@ for (i in 1:length(locus_files)) {
     print(locus[!variant_index %in% colnames(ld_mat)])
     print(maf2[!variant_index %in% colnames(ld_mat)])
 
-    ld_mat <- ld_mat[order(as.integer(rownames(ld_mat))), order(as.integer(colnames(ld_mat)))]
+    ld_mat <- ld_mat[order(as.integer(rownames(ld_mat))), order(as.integer(colnames(ld_mat))), drop=F]
     locus <- locus[order(as.integer(variant_index))]
     maf2 <- maf2[order(as.integer(variant_index))]
 
@@ -212,7 +227,7 @@ for (i in 1:length(locus_files)) {
 
       remove_maf <- nrow(locus[MAF == 0 | MAF == 1])
 
-      ld_mat <- ld_mat[as.character(rownames(ld_mat)) %in% as.character(locus$variant_index), as.character(colnames(ld_mat)) %in% as.character(locus$variant_index)]
+      ld_mat <- ld_mat[as.character(rownames(ld_mat)) %in% as.character(locus$variant_index), as.character(colnames(ld_mat)) %in% as.character(locus$variant_index), drop=F]
 
       if(!all(colnames(ld_mat) == locus$variant_index)){stop("ERROR: Column names of LD matrix do not match locus variant indices!")}
 
@@ -237,6 +252,7 @@ for (i in 1:length(locus_files)) {
       snp = as.character(locus$variant_index),
       position = as.integer(locus$bp),
       N = Neff,
+      MAF = as.numeric(locus$MAF),
       type = gwas_type,
       LD = ld_mat
     )
@@ -289,7 +305,22 @@ for (i in 1:length(locus_files)) {
         sep = "\t"
       )
     } else {
-      lbf <- data.table(variant_index = locus$variant_index, L = NA, niter = NA, beta = locus$beta, se = locus$se, MAF = locus$MAF, N = Neff, lambda = lambda)
+
+      gwas_finemap_abf <- as.data.frame(finemap.abf(coloc_inp_gwas))
+      rownames(gwas_finemap_abf) <- gwas_finemap_abf$snp
+
+      # Construct the SuSiE-style LBF table
+      lbf <- data.table(
+        variant_index = locus$variant_index,
+        L = NA,
+        niter = NA,
+        beta = locus$beta,
+        se = locus$se,
+        MAF = locus$MAF,
+        N = Neff,
+        lambda = lambda,
+        lbf_cs_1 = gwas_finemap_abf[as.character(locus$variant_index), ]$lABF.
+      )
 
       fwrite(lbf, paste0(pheno_id, "__", locus_id, "___", "gwas", ".txt.gz"), sep = "\t")
 
@@ -309,7 +340,7 @@ for (i in 1:length(locus_files)) {
       )
 
 
-      message("Fine-mapping did not succeed, writing out effect sizes.")
+      message("SuSiE fine-mapping did not succeed, performed Finemap ABF")
     }
   } else {
    

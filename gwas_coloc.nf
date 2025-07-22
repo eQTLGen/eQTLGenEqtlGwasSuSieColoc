@@ -82,7 +82,7 @@ summary['COLOC full output']                        = params.full_output
 summary['MRLink2']                                  = params.mrlink2
 summary['Gene Filter']                              = params.genefilter
 // import modules
-include { UNTAR; PARSELOCI; MAKEANNOTATIONTABLE; COLOCLBF; PARSEGENENAMES; PARSEGWAS; FINEMAPGWAS; Untar; ParseLoci; MakeAnnotationTable; ColocLbf; ParseGeneNames; ParseGwas; FinemapGwas} from './modules/eQtlGwasColoc.nf'
+include { UNTAR; PARSELOCI; MAKEANNOTATIONTABLE; COLOCLBF; COLOCLBFLEAN; PARSEGENENAMES; PARSEGWAS; FINEMAPGWAS; Untar; ParseLoci; MakeAnnotationTable; ColocLbf; ColocLbfLean; ParseGeneNames; ParseGwas; FinemapGwas} from './modules/eQtlGwasColoc.nf'
 
 log.info summary.collect { k,v -> "${k.padRight(21)}: $v" }.join("\n")
 log.info "======================================================="
@@ -108,57 +108,6 @@ full_output_ch = Channel.value(params.full_output)
 mrlink2_ch = Channel.value(params.mrlink2)
 
 workflow {
-        /*
-        UNTAR(finemapped_ch)
-
-        parse_loci_input_ch = UNTAR.out.flatten().combine(allele_ch).combine(gtf_ch)
-
-        PARSELOCI(parse_loci_input_ch)
-
-        loci_ch = PARSELOCI.out[0].flatten()
-        log_ch  = PARSELOCI.out[1].flatten()
-
-        log_ch.collectFile(name: 'combined_analysis.log', keepHeader: true, skip: 1).set { final_log_ch }
-
-        loci_ch = loci_ch.map { file ->
-        def name = file.getName()
-        tuple(name, file)
-        }
-
-        
-        gwas_info_file_ch
-        .splitCsv(header: true, sep: '\t')
-        .map { row ->
-            def gwas_name = row.pheno
-            def gwas_type = row.type
-            return [gwas_name, gwas_type]
-        }
-        .set { gwas_info_tuple_ch }
-
-       PARSEGWAS(gwas_ch.combine(gwas_info_tuple_ch).combine(gwas_window_ch))
-
-       PARSEGWAS.out.
-       collect().
-       flatten().
-       buffer( size: 20, remainder: true ).
-       map { items -> [items] }.  
-       set{ finemap_input_ch }
-       
-       
-       ld_ch.
-       combine(gwas_info_file_ch).
-       combine(finemap_input_ch).
-       set{ finemap_input_ch }
-       
-       FINEMAPGWAS(finemap_input_ch)
-
-       gwas_loci_ch = FINEMAPGWAS.out[0].flatten()
-       gwas_log_ch  = FINEMAPGWAS.out[1].flatten()
-
-       gwas_log_ch.collectFile(name: 'gwas_combined_analysis.log', keepHeader: true, skip: 1).set { gwas_final_log_ch }
-
-       final_log_ch.combine(gwas_final_log_ch).view()
-       */
        MAKEANNOTATIONTABLE(finemapped_eqtl_ch.combine(finemapped_gwas_ch).combine(genefilter_ch))
 
        MAKEANNOTATIONTABLE.out
@@ -224,17 +173,14 @@ workflow {
 
         coloc_input_ch = MAKEANNOTATIONTABLE.out
         .combine(finemapped_gwas_ch)
-        .combine(ld_ch)
         .combine(coloc_pp4_ch)
         .combine(full_output_ch)
-        .combine(mrlink2_ch)
         .combine(PARSEGENENAMES.out)
         .combine(allele_ch)
-        .combine(gene_file_tuples_ch2)
+        .combine(gene_file_tuples_ch2).view()
 
-
-        COLOCLBF(coloc_input_ch)
-        annotate_input_ch = COLOCLBF.out.flatten().filter { it.name.endsWith('_coloc_results.txt') }.collectFile(name: 'EqtlGwasColocSusieResults.txt', keepHeader: true, sort: true, storeDir: "${params.OutputDir}")
+        COLOCLBFLEAN(coloc_input_ch)
+        annotate_input_ch = COLOCLBFLEAN.out.flatten().filter { it.name.endsWith('_coloc_results.txt') }.collectFile(name: 'EqtlGwasColocSusieResults.txt', keepHeader: true, sort: true, storeDir: "${params.OutputDir}")
 
     
     }

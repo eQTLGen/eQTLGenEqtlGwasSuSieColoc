@@ -12,3 +12,4 @@ ENV TAR="/bin/tar"
 RUN ln -s /bin/tar /bin/gtar
 COPY temp/IGUtilityPackage_0.3.02.tar.gz /
 RUN R -e "install.packages('IGUtilityPackage_0.3.02.tar.gz', repos = NULL, type = 'source', dependencies = TRUE)"
+RUN R -e "install.packages(c('duckdbfs'), dependencies=TRUE, repos='http://cran.rstudio.com/')"

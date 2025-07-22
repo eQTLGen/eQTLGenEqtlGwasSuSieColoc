@@ -6,6 +6,7 @@ library(data.table)
 library(stringr)
 library(dplyr)
 library(argparse)
+library(duckdbfs)
 
 setDTthreads(1)
 parser <- ArgumentParser(description = "Run coloc analysis.")
@@ -407,7 +408,21 @@ eqtl_gene_iterator <- 0
 
 message(paste(nrow(overlaps), "COLOC analyses"))
 
-ld_dataset <- arrow::open_dataset(args$ld_folder)
+memory_limits <- c("24GB", "32GB", "64GB", "96GB")
+
+success <- FALSE
+for (memory_limit in memory_limits) {
+  message("Trying memory limit: ", memory_limit)
+  duckdbfs:::duckdb_set(memory_limit)
+
+  try({
+    ld_dataset <- open_dataset(args$ld_folder)
+    success <- TRUE
+    message("Success with memory limit: ", memory_limit)
+    break
+  }, silent = TRUE)
+}
+
 indik <- 1
 for (eqtl_gene_indik in eqtl_genes) {
   if (isTRUE(args$mrlink2)) {
@@ -507,7 +522,7 @@ for (eqtl_gene_indik in eqtl_genes) {
     eqtl_signals <- as.integer(str_remove(colnames(eqtl_mat)[colSums(eqtl_mat) != 0 & !is.na(colSums(eqtl_mat))], "lbf_cs_"))
 
     # SNP reference
-    ref <- open_dataset(args$reference) %>%
+    ref <- duckdbfs::open_dataset(args$reference) %>%
       filter(variant_index %in% eqtl$variant_index) %>%
       select(variant_index, variant) %>%
       collect() %>%
@@ -521,7 +536,8 @@ for (eqtl_gene_indik in eqtl_genes) {
     length_gwas_loci <- nrow(inp_coloc_f)
 
     # Read in LD
-    ld_dataset2 <- ld_dataset %>% filter(chr == as.integer(unique(eqtl$chromosome)))
+    chromosome_as_integer <- as.integer(unique(eqtl$chromosome))
+    ld_dataset2 <- ld_dataset %>% filter(chr == chromosome_as_integer)
     message("LD loaded!")
     ld_mat <- get_ld_matrix_wide(
       permuted_dataset = ld_dataset2,
