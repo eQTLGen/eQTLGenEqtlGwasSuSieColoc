@@ -153,6 +153,28 @@ process ColocLbfLean {
 }
 
 
+process FilterColoc {
+    scratch '$TMPDIR'
+
+    input:
+        path(coloc_ch)
+        path(variant_ref)
+        val(ld_folder)
+
+    output:
+        path("coloc_results_with_ld_col.txt")
+
+    shell:
+        """
+        FilterColocResults.R \
+        --coloc ${coloc_ch} \
+        --reference ${variant_ref} \
+        --ld_folder ${ld_folder}
+        """
+}
+
+
+
 
 workflow UNTAR {
     take:
@@ -242,6 +264,20 @@ workflow COLOCLBFLEAN {
 
     main:
         ColocLbf_output_ch = ColocLbfLean(data)
+
+    emit:
+        ColocLbf_output_ch
+}
+
+
+workflow COLOCFILTER {
+    take:
+        data
+        reference
+        ld
+
+    main:
+        ColocLbf_output_ch = FilterColoc(data, reference, ld)
 
     emit:
         ColocLbf_output_ch
