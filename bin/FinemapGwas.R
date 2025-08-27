@@ -109,8 +109,7 @@ for (i in 1:length(locus_files)) {
 
   remove_maf <- 0
 
-  locus <- fread(locus_files[i]) %>% select(!starts_with("lbf_cs"))
-  locus$chromosome <- 6
+  locus <- fread(locus_files[i])
   pheno_id <- str_replace(locus_files[i], "__.*", "")
 
   locus_id <- str_replace(locus_files[i], "___temp.*", "")
