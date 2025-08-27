@@ -109,7 +109,8 @@ for (i in 1:length(locus_files)) {
 
   remove_maf <- 0
 
-  locus <- fread(locus_files[i])
+  locus <- fread(locus_files[i]) %>% select(!starts_with("lbf_cs"))
+  locus$chromosome <- 6
   pheno_id <- str_replace(locus_files[i], "__.*", "")
 
   locus_id <- str_replace(locus_files[i], "___temp.*", "")
@@ -285,8 +286,23 @@ for (i in 1:length(locus_files)) {
     }
 
     if (!is.null(gwas_susie) & !isFALSE(gwas_susie$converged) & !is.null(gwas_susie$sets$cs)) {
-      lbf <- data.table(variant_index = colnames(gwas_susie$lbf_variable), L = trace_gwas$L, niter = trace_gwas$niter, beta = locus$beta, se = locus$se, MAF = locus$MAF, N = Neff, lambda = lambda, t(gwas_susie$lbf_variable))
-      colnames(lbf)[-c(1:7)] <- paste0("lbf_cs_", 1:(ncol(lbf) - 7))
+      # Get LBF matrix including all credible sets
+      lbf_matrix <- t(gwas_susie$lbf_variable)
+      colnames(lbf_matrix) <- paste0("lbf_cs_", 1:(ncol(lbf_matrix)))
+
+      # Identify the credible sets that are identified by SuSiE (after internal deduplication steps)
+      credible_set_ids <- str_replace(names(gwas_susie$sets$cs), "L", "lbf_cs_")
+
+      # Construct final dataframe with results, including LBF matrix
+      lbf <- data.table(
+        variant_index = colnames(gwas_susie$lbf_variable),
+        L = trace_gwas$L,
+        niter = trace_gwas$niter,
+        beta = locus$beta,
+        se = locus$se,
+        MAF = locus$MAF,
+        N = Neff, lambda = lambda,
+        lbf_matrix[,credible_set_ids])
 
       fwrite(lbf, paste0(pheno_id, "__", locus_id, "___", "gwas", ".txt.gz"), sep = "\t")
 
