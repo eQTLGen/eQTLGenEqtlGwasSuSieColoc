@@ -301,7 +301,7 @@ for (i in 1:length(locus_files)) {
         se = locus$se,
         MAF = locus$MAF,
         N = Neff, lambda = lambda,
-        lbf_matrix[,credible_set_ids])
+        lbf_matrix[, c(credible_set_ids), drop=F])
 
       fwrite(lbf, paste0(pheno_id, "__", locus_id, "___", "gwas", ".txt.gz"), sep = "\t")
 
