@@ -267,7 +267,7 @@ gwas <- open_dataset(paste0(args$gwas_folder, "/gwas_id=", args$gwas_id))
 nr_loci <- nrow(Loci)
 message(paste(nr_loci, "loci found!"))
 
-for (i in 1:nrow(Loci)) {
+for (i in seq_len(nrow(Loci))) {
 
   message(paste0("Analysing: ", Loci$locus_id[i], " ", i, "/", nrow(Loci), "..."))
 
@@ -279,9 +279,10 @@ for (i in 1:nrow(Loci)) {
 
   locus <- gwas %>%
     filter(chromosome == temp_chr & bp > temp_start & bp < temp_end) %>%
-    select(variant_index, chromosome, bp, beta, se, p, N) %>%
+    select(variant_index, chromosome, bp, beta, se, p, N, Ntype) %>%
     collect() %>%
-    filter(N >= 0.8 * max(N)) %>%
+    filter(N >= 0.8 * max(N) | Ntype == "derived") %>%
+    select(-Ntype) %>%
     as.data.table()
 
   message(paste(nrow(locus), "variants"))
