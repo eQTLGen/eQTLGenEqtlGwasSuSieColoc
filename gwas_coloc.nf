@@ -180,8 +180,12 @@ workflow {
         .combine(gene_file_tuples_ch2).view()
 
         COLOCLBFLEAN(coloc_input_ch)
-        annotate_input_ch = COLOCLBFLEAN.out.flatten().filter { it.name.endsWith('_coloc_results.txt') }.collectFile(name: 'EqtlGwasColocSusieResults.txt', keepHeader: true, sort: true, storeDir: "${params.OutputDir}")
+        annotate_input_ch = COLOCLBFLEAN.out.colocalizations
+        .flatten().filter { it.name.endsWith('_coloc_results.txt') }
+        .collectFile(name: 'EqtlGwasColocSusieResults.txt', keepHeader: true, sort: true, storeDir: "${params.OutputDir}")
 
+        coloc_summary_output_ch = COLOCLBFLEAN.out.summary
+        .collectFile(name: 'EqtlGwasColocSummary.txt', keepHeader: true, skip: 1, sort: true, storeDir: "${params.OutputDir}")
     
     }
 

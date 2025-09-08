@@ -56,7 +56,17 @@ print(eqtl_genes)
 
 gwas_files <- list.files()[str_detect(list.files(), "gwas")]
 
+# From all overlapping signals, get the overlaps specific to the eqtl
+# and gwas loci that we are analysing here.
 overlaps <- overlaps[eqtl_gene %in% eqtl_genes & gwas_file %in% gwas_files]
+
+# Create a summary table. In essence this could be the table in which we write all colocalization results,
+# But let's try to use this just for debugging purposses.
+# - Is the overlap eligeble for Coloc after QC
+# - Is  the overlap show colocalization
+results_summary <- data.frame(overlaps)
+results_summary$qc_pass <- NA
+results_summary$n_colocalizing_signal_pairs <- NA
 
 fwrite(overlaps, "overlaps.txt")
 
@@ -131,13 +141,14 @@ for (eqtl_gene_indik in eqtl_genes) {
     message("Iterating over GWASs...")
 
     # colocalisation
-    for (gwas_ind in 1:nrow(inp_coloc_f)) {
-      message(paste("Analysing: ", inp_coloc_f$gwas_file[gwas_ind]))
+    for (gwas_ind in seq_len(nrow(inp_coloc_f))) {
+      focal_gwas_locus_file <- inp_coloc_f$gwas_file[gwas_ind]
+      message(paste("Analysing: ", focal_gwas_locus_file))
 
-      print(inp_coloc_f$gwas_file[gwas_ind])
+      print(focal_gwas_locus_file)
 
       gwas_loci_iterator <- gwas_loci_iterator + 1
-      gwas <- fread(inp_coloc_f$gwas_file[gwas_ind])
+      gwas <- fread(focal_gwas_locus_file)
 
       gwas <- gwas[order(variant_index)]
       gwas <- gwas[variant_index %in% eqtl$variant_index]
@@ -155,9 +166,12 @@ for (eqtl_gene_indik in eqtl_genes) {
       eqtl2 <- eqtl[variant_index %in% gwas_variant_indices, ]
       gwas2 <- gwas[variant_index %in% eqtl_variant_indices, ]
 
-      if (nrow(gwas2) > 500 & length(gwas_signals) > 0) {
+      passes_threshold <- nrow(gwas2) > 350 & length(gwas_signals) > 0
+      results_summary$pass_qc[results_summary$eqtl_gene == eqtl_file & results_summary$gwas_file == focal_gwas_locus_file] <- passes_threshold
+      if (passes_threshold) {
         message("Trying analysis!")
         message("Iterating over independent eQTL signals...")
+        n_colocalizating_signal_pairs <- 0
         for (i in eqtl_signals) {
           message("Iterating over independent GWAS signals...")
           for (j in gwas_signals) {
@@ -186,12 +200,15 @@ for (eqtl_gene_indik in eqtl_genes) {
             res_temp$idx1 <- i
             res_temp$idx2 <- j
 
+            pass_coloc <- !is.null(res_temp$PP.H4.abf) &&
+              !is.na(res_temp$PP.H4.abf) &&
+              length(res_temp$PP.H4.abf) > 0 &&
+              res_temp$PP.H4.abf > args$coloc_threshold
+
+            n_colocalizating_signal_pairs <- n_colocalizating_signal_pairs + as.integer(pass_coloc)
 
             if (gwas_ind == 1 & i == min(eqtl_signals) & j == min(gwas_signals)) {
-              if (!is.null(res_temp$PP.H4.abf) &&
-                !is.na(res_temp$PP.H4.abf) &&
-                length(res_temp$PP.H4.abf) > 0 &&
-                res_temp$PP.H4.abf > args$coloc_threshold) {
+              if (pass_coloc) {
                 o <- order(res_coloc$results$SNP.PP.H4, decreasing = TRUE)
                 cs <- cumsum(res_coloc$results$SNP.PP.H4[o])
                 w <- which(cs > 0.95)[1]
@@ -208,10 +225,7 @@ for (eqtl_gene_indik in eqtl_genes) {
                 res_temp$GWAS_Z <- NA
               }
             } else {
-              if (!is.null(res_temp$PP.H4.abf) &&
-                !is.na(res_temp$PP.H4.abf) &&
-                length(res_temp$PP.H4.abf) > 0 &&
-                res_temp$PP.H4.abf > args$coloc_threshold) {
+              if (pass_coloc) {
                 o <- order(res_coloc$results$SNP.PP.H4, decreasing = TRUE)
                 cs <- cumsum(res_coloc$results$SNP.PP.H4[o])
                 w <- which(cs > 0.95)[1]
@@ -256,6 +270,7 @@ for (eqtl_gene_indik in eqtl_genes) {
           eqtl_locus_iterator, "/", eqtl_locus_length, " eQTL locus, ",
           gwas_loci_iterator, "/", length_gwas_loci, " overlapping GWAS locus"
         ))
+        results_summary$n_colocalizing_signal_pairs[results_summary$eqtl_gene == eqtl_file & results_summary$gwas_file == focal_gwas_locus_file] <- n_colocalizating_signal_pairs
       }
       rm(gwas, gwas2, eqtl2)
       gc()
@@ -265,4 +280,7 @@ for (eqtl_gene_indik in eqtl_genes) {
     message(paste("Finalised with eQTL iterations"))
   }
 }
+
+fwrite(results_summary, "results_summary_per_overlap.txt", sep = "\t", row.names=F, col.names=T, quote=F)
+
 warnings()

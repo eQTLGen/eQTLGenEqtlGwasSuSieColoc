@@ -75,7 +75,7 @@ process FinemapGwas {
 process MakeAnnotationTable {
     scratch '$TMPDIR'
     
-    publishDir "${params.OutputDir}", mode: 'copy', overwrite: true, pattern: "GwasEqtlOverlaps.txt"
+    publishDir "${params.OutputDir}", mode: 'copy', overwrite: true, pattern: "EqtlGwasOverlaps.txt"
 
     input:  
         tuple path(finemapped_eqtl, stageAs: 'finemapped_eqtl'), path(finemapped_gwas, stageAs: 'finemapped_gwas'), path(genefilter)
@@ -139,7 +139,8 @@ process ColocLbfLean {
     input:
         tuple path(overlapfile), path(gwas_ch), val(coloc_th), val(full_output), path(gene_names), path(ref), path(eqtl_paths), path(gwas_paths)
     output:
-        path("*_coloc_results.txt")
+        path("*_coloc_results.txt"), emit: colocalizations
+        path "results_summary_per_overlap.txt", emit: summary
 
     shell:
         """
@@ -157,9 +158,7 @@ process FilterColoc {
     scratch '$TMPDIR'
 
     input:
-        path(coloc_ch)
-        path(variant_ref)
-        val(ld_folder)
+        tuple path(coloc_ch), path(variant_ref), val(ld_folder)
 
     output:
         path("coloc_results_with_ld_col.txt")
@@ -273,11 +272,9 @@ workflow COLOCLBFLEAN {
 workflow COLOCFILTER {
     take:
         data
-        reference
-        ld
 
     main:
-        ColocLbf_output_ch = FilterColoc(data, reference, ld)
+        ColocLbf_output_ch = FilterColoc(data)
 
     emit:
         ColocLbf_output_ch
