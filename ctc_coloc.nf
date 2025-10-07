@@ -10,34 +10,31 @@ def helpmessage() {
 
 log.info"""
 
-FinemapGwas v${workflow.manifest.version}"
+eQtlGwasSuSieColoc v${workflow.manifest.version}"
 ===========================================================
-Pipeline for SuSiE fine-mapping on GWAS summary statistics.
+Pipeline for running fast eQTL-GWAS colocalisation analyses on the fine-mapped eQTLs.
 
 Usage:
 
 nextflow run main.nf 
 --finemapped_signals \
---gwas_database \
 --ld_reference \
 --allele_info \
---maf_file \
 --gtf \
 --OutputDir
 
 Mandatory arguments:
---finemapped_eqtl           Folder with fine-mapped eQTL loci.
 --allele_info               Parquet file with alleles and SNP positions for eQTL dataset.
---gwas_database             Folder with fine-mapped GWAS loci.
---gwas_info_file            File with GWAS file name, GWAS type (quant/cc) and effective N.
---maf_file                  File with variant index and MAF.
---ld_reference              Folder with permuted LD reference files.
+--finemapped_gwas           Folder with fine-mapped GWAS loci.
+--gwas_info_file            File with GWAS file name and GWAS type (quant/cc).
 --gtf                       GTF file for gene annotation.
 
 Optional arguments:
 --coloc_threshold           COLOC PP4 threshold to declare colocalisation. Defaults to 0.8.
 --gwas_window               GWAS locus window size for fine-mapping. Defaults to 1000000 (+/-1Mb from lead variant).
 --full_output               Whether to output all coloc results, including those which show no colocalisation (true/false). Defaults to false.
+--mrlink2                   Whether to run also MRLink2 analysis (true/false). Defaults to false.
+--genefilter                File with optional gene filter to confine. Need to include ENSG IDs and no need for header.
 --OutputDir                 Output directory. Defaults to "results".
 """.stripIndent()
 
@@ -52,12 +49,12 @@ if (params.help){
 params.OutputDir = 'results'
 params.coloc_threshold = 0.8
 params.full_output = false
+params.mrlink2 = false
 params.gwas_window = 1000000
-params.locus_def = 'merge'
 
 //Show parameter values
 log.info """===============================================================
-eQTLGen cis-trans fine-mapped coloc pipeline v${workflow.manifest.version}"
+eQTLGen GWAS-eQTL fine-mapped coloc pipeline v${workflow.manifest.version}"
 ==========================================================================="""
 def summary = [:]
 summary['Pipeline Version']                         = workflow.manifest.version
@@ -70,69 +67,73 @@ summary['Config Profile']                           = workflow.profile
 summary['Container Engine']                         = workflow.containerEngine
 if(workflow.containerEngine) summary['Container']   = workflow.container
 summary['Output directory']                         = params.OutputDir
-summary['eQTL files']                               = params.finemapped_signals
-summary['GWAS files']                               = params.gwas_database
+summary['Fine-mapped eQTL files']                   = params.finemapped_eqtl
+summary['Fine-mapped GWAS files']                   = params.finemapped_gwas
 summary['GWAS info file']                           = params.gwas_info_file
-summary['MAF file']                                 = params.maf_file
 summary['LD reference']                             = params.ld_reference
 summary['Allele info file']                         = params.allele_info
 summary['GTF file']                                 = params.gtf
 summary['COLOC PP4 threshold']                      = params.coloc_threshold
 summary['GWAS window size']                         = params.gwas_window
 summary['COLOC full output']                        = params.full_output
+summary['MRLink2']                                  = params.mrlink2
+summary['Gene Filter']                              = params.genefilter
 // import modules
-include { UNTAR; PARSELOCI; MAKEANNOTATIONTABLE; COLOCLBF; PARSEGENENAMES; PARSEGWAS; FINEMAPGWAS; Untar; ParseLoci; MakeAnnotationTable; ColocLbf; ParseGeneNames; ParseGwas; FinemapGwas} from './modules/eQtlGwasColoc.nf'
+include { UNTAR; PARSELOCI; MAKEANNOTATIONTABLE; COLOCLBF; COLOCLBFLEAN; PARSEGENENAMES; PARSEGWAS; FINEMAPGWAS; Untar; ParseLoci; MakeAnnotationTable; ColocLbf; ColocLbfLean; ParseGeneNames; ParseGwas; FinemapGwas; MakeAnnotationTableGwasPairs; ColocLbfGwas} from './modules/eQtlGwasColoc.nf'
 
 log.info summary.collect { k,v -> "${k.padRight(21)}: $v" }.join("\n")
 log.info "======================================================="
 
 // Define argument channels
-finemapped_ch = Channel.fromPath(params.finemapped_signals, type: 'dir')
 allele_ch = Channel.fromPath(params.allele_info)
 gtf_ch = Channel.fromPath(params.gtf)
-gwas_ch = Channel.fromPath(params.gwas_database, type: 'dir')
+
 gwas_info_file_ch = Channel.fromPath(params.gwas_info_file)
-maf_file_ch = Channel.fromPath(params.maf_file)
+    .splitCsv(header: true, sep: '\t')
+    .branch { row ->
+         ctc: row.bctc_trait == "TRUE"
+         nonctc: row.bctc_trait == "FALSE"
+    }
+
+ctc_trait_ch = gwas_info_file_ch.ctc
+    .map { row -> row.pheno}.collect()
+nonctc_trait_ch = gwas_info_file_ch.nonctc
+    .map { row -> row.pheno}.collect()
+
+ctc_gwas_traits = gwas_info_file_ch.ctc.map { row -> row[0] }
+nonctc_gwas_traits = gwas_info_file_ch.nonctc.map { row -> row[0] }
+
+finemapped_gwas_ch = Channel.fromPath(params.finemapped_gwas, type: 'dir')
+finemapped_gwas_files_ch = Channel.fromPath("${params.finemapped_gwas}/*.gz")
+
 ld_ch = Channel.fromPath(params.ld_reference, type: 'dir')
+
 coloc_pp4_ch = Channel.value(params.coloc_threshold)
 gwas_window_ch = Channel.value(params.gwas_window)
-loc_def_ch = Channel.value(params.locus_def)
 full_output_ch = Channel.value(params.full_output)
+mrlink2_ch = Channel.value(params.mrlink2)
 
 workflow {
-        
-        gwas_info_file_ch
-        .splitCsv(header: true, sep: '\t')
-        .map { row ->
-            def gwas_name = row.pheno
-            def gwas_type = row.type
-            return [gwas_name, gwas_type]
-        }
-        .set { gwas_info_tuple_ch }
+    overlap_ch = MakeAnnotationTableGwasPairs(
+        finemapped_gwas_ch.collect(), ctc_trait_ch, nonctc_trait_ch
+        )
 
-       PARSEGWAS(gwas_ch.combine(gwas_info_tuple_ch).combine(gwas_window_ch).combine(loc_def_ch))
+    overlap_ch_buffered = overlap_ch.splitText(by: 500, keepHeader: true, file: true)
 
-       PARSEGWAS.out.
-       collect().
-       flatten().
-       buffer( size: 10, remainder: true ).
-       map { items -> [items] }.  
-       set{ finemap_input_ch }
-       
-       ld_ch.
-       combine(gwas_info_file_ch).
-       combine(maf_file_ch).
-       combine(finemap_input_ch).
-       set{ finemap_input_ch }
-       
-       FINEMAPGWAS(finemap_input_ch)
+    ColocLbfGwas(
+        overlap_ch_buffered,
+        finemapped_gwas_ch.collect(),
+        coloc_pp4_ch,
+        full_output_ch,
+        allele_ch.collect())
 
-       gwas_loci_ch = FINEMAPGWAS.out[0].flatten()
-       gwas_log_ch  = FINEMAPGWAS.out[1].flatten()
+    annotate_input_ch = ColocLbfGwas.out.colocalizations
+        .flatten().filter { it.name.endsWith('_coloc_results.txt') }
+        .collectFile(name: 'CtcGwasColocSusieResults.txt', keepHeader: true, sort: true, storeDir: "${params.OutputDir}")
 
-       gwas_log_ch.collectFile(name: 'gwas_combined_analysis.log', keepHeader: true, skip: 1).set { gwas_final_log_ch }
-    
-    }
+    coloc_summary_output_ch = ColocLbfGwas.out.summary
+        .collectFile(name: 'CtcGwasColocSummary.txt', keepHeader: true, skip: 1, sort: true, storeDir: "${params.OutputDir}")
+}
 
 
 workflow.onComplete {

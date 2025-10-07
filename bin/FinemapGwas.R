@@ -35,7 +35,50 @@ parser$add_argument("--ld_folder",
   help = "Folder containing permuted LD files."
 )
 
+parser$add_argument("--full_lbf_matrix",
+                    default = F,
+                    action = 'store_true',
+                    help="Return the entire LBF matrix instead of just those forming credible sets by providing this flag"
+)
+
 args <- parser$parse_args()
+
+runsusie <- function(d,suffix=1,
+                  maxit=100,repeat_until_convergence=TRUE,
+                  s_init=NULL, ...) {
+  coloc:::check_dataset(d,suffix,req=c("beta","varbeta","LD","snp","N"))
+  coloc:::check_ld(d,d$LD)
+
+  LD=d$LD[d$snp,d$snp] # just in case
+  snp=d$snp
+
+  converged=FALSE;
+  ## set some defaults for susie arguments
+  susie_args=list(...)
+  if("max_iter" %in% names(susie_args)) {
+    maxit=susie_args$max_iter
+    susie_args = susie_args[ setdiff(names(susie_args), "max_iter") ]
+  }
+  ## at 0.12.6 susieR introduced need for n = sample size
+  if(!("n" %in% names(susie_args)))
+    susie_args=c(list(n=d$N), susie_args)
+
+  while(!converged) {
+    message("running max iterations: ",maxit)
+    str(c(list(bhat = d$beta, shat = sqrt(d$varbeta), R=LD, max_iter=maxit), susie_args))
+    res=do.call(susie_rss,
+                c(list(bhat = d$beta, shat = sqrt(d$varbeta), R=LD, max_iter=maxit), susie_args))
+    converged=res$converged; #s_init=res; maxit=maxit*2
+    message("\tconverged: ",converged)
+    if(!converged && repeat_until_convergence==FALSE)
+      stop("susie_rss() did not converge in ",maxit," iterations. Try running with run_until_convergence=TRUE")
+    if(!converged)
+      maxit=maxit * 100 # no point in half measures!
+  }
+  res=annotate_susie(res, snp, LD)
+
+  return(res)
+}
 
 # functions
 safe_runsusie <- function(...) {
@@ -53,6 +96,18 @@ safe_runsusie <- function(...) {
       return(NULL)
     }
   )
+}
+
+compute_yty <- function(beta, se, p, R, n, k) {
+  # beta and se should be standarised
+  beta_s <- beta * sqrt(2 * p * (1 - p))
+  se_s <- se * sqrt(2 * p * (1 - p))
+
+  # Y'Y =  Bj^2 (Xj'Xj) + Var(Bj)(Xj'Xj)(N - k)
+  XjtXj <- (n - 1) * diag(R)
+  yty <- beta_s**2 * XjtXj + se_s**2 * XjtXj * (n - k)
+
+  return(median(yty))
 }
 
 # Extract locus as data table
@@ -95,6 +150,13 @@ message("Reading MAF file...done!")
 message("Opening LD file...")
 ld_dataset <- duckdbfs::open_dataset(args$ld_folder)
 message("Opening LD file...done!")
+
+filter_lbf_mat <- !args$full_lbf_matrix
+if (filter_lbf_mat) {
+  message("Filtering LBF matrix for those forming credible sets!")
+} else {
+  message("Keeping the full LBF matrix without filtering for those forming credible sets!")
+}
 
 for (i in 1:length(locus_files)) {
   if (exists("gwas_susie")) {
@@ -244,33 +306,34 @@ for (i in 1:length(locus_files)) {
     }
     } else if(gwas_type == "cc"){
 
-    Neff <- gwas_info[pheno == pheno_id]$Neff
+      Neff <- gwas_info[pheno == pheno_id]$Neff
 
-    coloc_inp_gwas <- list(
-      beta = locus$beta,
-      varbeta = locus$se * locus$se,
-      snp = as.character(locus$variant_index),
-      position = as.integer(locus$bp),
-      N = Neff,
-      MAF = as.numeric(locus$MAF),
-      type = gwas_type,
-      LD = ld_mat
-    )
+      coloc_inp_gwas <- list(
+        beta = locus$beta,
+        varbeta = locus$se * locus$se,
+        snp = as.character(locus$variant_index),
+        position = as.integer(locus$bp),
+        N = Neff,
+        MAF = as.numeric(locus$MAF),
+        type = gwas_type,
+        LD = ld_mat
+      )
     }
 
     # Calculate lambda
     lambda <- estimate_s_rss(locus$beta / locus$se, ld_mat, n = median(locus$N))
     message(paste("Lambda:", lambda))
 
+    var_y <- coloc:::sdY.est(locus$se^2, locus$MAF, median(locus$N))
 
-    gwas_susie <- safe_runsusie(coloc_inp_gwas, L = 10, estimate_residual_variance = FALSE, repeat_until_convergence = FALSE, maxit = 10000)
+    gwas_susie <- safe_runsusie(coloc_inp_gwas, var_y = var_y, L = 10, estimate_residual_variance = FALSE, repeat_until_convergence = FALSE, maxit = 10000)
     if (!is.null(gwas_susie)) {
       trace_gwas <- list(L = 10, estimate_residual_variance = FALSE, niter = gwas_susie$niter)
     }
     if (is.null(gwas_susie) | isFALSE(gwas_susie$converged) | is.null(gwas_susie$sets$cs)) {
       message("None of the nCS values led to convergence. Retrying with different L.")
       message("Attempting to run SuSie with L = ", 5, ", and estimate_residual_variance = FALSE")
-      gwas_susie <- safe_runsusie(coloc_inp_gwas, L = 5, estimate_residual_variance = FALSE, repeat_until_convergence = FALSE, maxit = 10000)
+      gwas_susie <- safe_runsusie(coloc_inp_gwas, var_y = var_y, L = 5, estimate_residual_variance = FALSE, repeat_until_convergence = FALSE, maxit = 10000)
       if (!is.null(gwas_susie)) {
         trace_gwas <- list(L = 5, estimate_residual_variance = FALSE, niter = gwas_susie$niter)
       }
@@ -278,7 +341,7 @@ for (i in 1:length(locus_files)) {
     if (is.null(gwas_susie) | isFALSE(gwas_susie$converged) | is.null(gwas_susie$sets$cs)) {
       message("None of the nCS values led to convergence. Retrying with different L.")
       message("Attempting to run SuSie with L = ", 3, ", and estimate_residual_variance = FALSE")
-      gwas_susie <- safe_runsusie(coloc_inp_gwas, L = 3, estimate_residual_variance = FALSE, repeat_until_convergence = FALSE, maxit = 10000)
+      gwas_susie <- safe_runsusie(coloc_inp_gwas, var_y = var_y, L = 3, estimate_residual_variance = FALSE, repeat_until_convergence = FALSE, maxit = 10000)
       if (!is.null(gwas_susie)) {
         trace_gwas <- list(L = 3, estimate_residual_variance = FALSE, niter = gwas_susie$niter)
       }
@@ -289,10 +352,22 @@ for (i in 1:length(locus_files)) {
       lbf_matrix <- t(gwas_susie$lbf_variable)
       colnames(lbf_matrix) <- paste0("lbf_cs_", 1:(ncol(lbf_matrix)))
 
+      str(lbf_matrix)
+
       # Identify the credible sets that are identified by SuSiE (after internal deduplication steps)
-      credible_set_ids <- str_replace(names(gwas_susie$sets$cs), "L", "lbf_cs_")
+      credible_set_names <- names(gwas_susie$sets$cs)
+      credible_set_ids <- str_replace(credible_set_names, "L", "lbf_cs_")
+
+      lbf_matrix_filtered <- lbf_matrix[, c(credible_set_ids), drop = F]
 
       # Construct final dataframe with results, including LBF matrix
+      if (filter_lbf_mat) {
+        lbf_matrix <- lbf_matrix_filtered
+      }
+
+      str(lbf_matrix)
+      print(colnames(lbf_matrix))
+
       lbf <- data.table(
         variant_index = colnames(gwas_susie$lbf_variable),
         L = trace_gwas$L,
@@ -301,9 +376,23 @@ for (i in 1:length(locus_files)) {
         se = locus$se,
         MAF = locus$MAF,
         N = Neff, lambda = lambda,
-        lbf_matrix[, c(credible_set_ids), drop=F])
+        lbf_matrix[, colnames(lbf_matrix), drop=F])
 
-      fwrite(lbf, paste0(pheno_id, "__", locus_id, "___", "gwas", ".txt.gz"), sep = "\t")
+      # Add credible set identifiers to the output file, as well as a column with filtered lbf identifiers
+      lbf$pip <- gwas_susie$pip
+      lbf$CS <- NA
+      lbf$CS_pass <- NA
+      if(length(gwas_susie$sets$cs) != 0){
+        for(l in 1:length(gwas_susie$sets$cs)){
+          credible_set_id_as_numeric <- gsub("L", "", credible_set_names[l])
+          lbf$CS[gwas_susie$sets$cs[[l]]] <- credible_set_id_as_numeric
+          if (max(lbf_matrix_filtered[,credible_set_ids[l]]) > 2) {
+            lbf$CS_pass[gwas_susie$sets$cs[[l]]] <- credible_set_id_as_numeric
+          }
+        }
+      }
+
+      fwrite(lbf, paste0(pheno_id, "__", locus_id, "___", "gwas", ".txt.gz"), sep = "\t", row.names=F)
 
       fwrite(
         data.table(
@@ -337,6 +426,35 @@ for (i in 1:length(locus_files)) {
         lbf_cs_1 = gwas_finemap_abf[as.character(locus$variant_index), ]$lABF.
       )
 
+      # Add credible set identifiers to the output file, as well as a column with filtered lbf identifiers
+      lbf$pip <- gwas_finemap_abf[as.character(locus$variant_index), ]$SNP.PP
+      lbf$CS <- NA
+      lbf$CS_pass <- NA
+
+      # Sort by PIP descending and compute cumulative sum
+      setorder(lbf, -pip)
+      lbf[, cumulative_pip := cumsum(pip)]
+
+      # Select variants until cumulative_PIP reaches threshold
+      threshold <- 0.95
+      variants_passed_threshold <- which(lbf[, cumulative_pip > threshold])
+
+      if (length(variants_passed_threshold) == 0) {
+        message("Total probability not greater than threshold")
+      } else {
+        first_variant_passed_threshold <- variants_passed_threshold[1]
+
+        lbf$CS[1:first_variant_passed_threshold] <- "1"
+        if (max(lbf$lbf_cs_1) > 2) {
+          lbf$CS_pass[1:first_variant_passed_threshold] <- "1"
+        }
+
+        lbf <- lbf[order(as.numeric(lbf$variant_index)), ]
+        lbf$cumulative_pip <- NULL
+
+      }
+
+
       fwrite(lbf, paste0(pheno_id, "__", locus_id, "___", "gwas", ".txt.gz"), sep = "\t")
 
       fwrite(
@@ -353,7 +471,6 @@ for (i in 1:length(locus_files)) {
         paste0(pheno_id, "__", locus_id, "___", "gwas", "_AnnotationFile.txt"),
         sep = "\t"
       )
-
 
       message("SuSiE fine-mapping did not succeed, performed Finemap ABF")
     }

@@ -5,7 +5,7 @@
 library(argparse)
 library(data.table)
 library(tidyverse)
-library(arrow)
+library(duckdbfs)
 
 # Declare constants
 setDTthreads(1)
@@ -69,7 +69,7 @@ calculate_ld_for_coloc <- function(dat, variant_reference, ld_panel) {
 
   variant_map <- deframe(coloc_variants %>% select(variant, variant_index))
 
-  dat$ld_R <- ld_mat[variant_map[dat$hit1], variant_map[dat$hit2]]
+  dat$ld_R <- ld_mat[as.character(variant_map[dat$hit1]), as.character(variant_map[dat$hit2])]
 
   return(dat)
 }

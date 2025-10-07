@@ -38,7 +38,7 @@ process ParseGwas {
     scratch '$TMPDIR'
 
     input:
-        tuple path(gwas_folder), val(gwas_id), val(gwas_type), val(gwas_window)
+        tuple path(gwas_folder), val(gwas_id), val(gwas_type), val(gwas_window), val(loc_def)
 
     output:
        path("*txt.gz")
@@ -48,15 +48,16 @@ process ParseGwas {
         ParseGwas.R \
         --gwas_folder ${gwas_folder} \
         --gwas_id ${gwas_id} \
-        --win_size ${gwas_window}
+        --win_size ${gwas_window} \
+        --locus_def ${loc_def}
         """
 }
 
 process FinemapGwas {
     scratch '$TMPDIR'
 
-    publishDir "${params.OutputDir}/GWAS_finemap", mode: 'copy', overwrite: true, pattern: "*.txt.gz"
-    
+    publishDir "${params.OutputDir}/intermediate/prefilter", mode: 'copy', overwrite: true, pattern: "*.txt.gz"
+
     input:
         tuple path(ld), path(gwas_info_file), path(maf_file), path(loci) 
 
@@ -71,6 +72,28 @@ process FinemapGwas {
         --ld_folder ${ld}
         """
 }
+
+
+process PostFinemapFiltering {
+    scratch '$TMPDIR'
+
+    publishDir "${params.OutputDir}/output/GWAS_finemap", mode: 'copy', overwrite: true, pattern: "*.txt.gz"
+
+    input:
+
+
+    output:
+       path("*gwas.txt.gz"), optional: true
+
+    script:
+        """
+        PostFinemapFilter.R \
+        --loci_pairs \
+        --ld_threshold ${maf_file} \
+        --ld_folder ${ld}
+        """
+}
+
 
 process MakeAnnotationTable {
     scratch '$TMPDIR'
@@ -92,6 +115,31 @@ process MakeAnnotationTable {
     """
 
 }
+
+
+process MakeAnnotationTableGwasPairs {
+    scratch '$TMPDIR'
+
+    publishDir "${params.OutputDir}", mode: 'copy', overwrite: true, pattern: "GwasPairsOverlaps.txt"
+
+    input:
+        path(finemapped_gwas, stageAs: 'finemapped_gwas')
+        val(a_filter)
+        val(b_filter)
+
+    output:
+        path("GwasPairsOverlaps.txt")
+
+    script:
+    """
+    ConstructAndAnnotateTableGwasPairs.R \
+    --finemapped_gwas ${finemapped_gwas} \
+    --a ${a_filter.join(" ")} \
+    --b ${b_filter.join(" ")}
+    """
+
+}
+
 
 process ParseGeneNames {
     scratch '$TMPDIR'
@@ -139,7 +187,7 @@ process ColocLbfLean {
     input:
         tuple path(overlapfile), path(gwas_ch), val(coloc_th), val(full_output), path(gene_names), path(ref), path(eqtl_paths), path(gwas_paths)
     output:
-        path("*_coloc_results.txt"), emit: colocalizations
+        path "*_coloc_results.txt", emit: colocalizations
         path "results_summary_per_overlap.txt", emit: summary
 
     shell:
@@ -148,6 +196,31 @@ process ColocLbfLean {
         --overlap_file EqtlGwasOverlaps.txt \
         --coloc_threshold ${coloc_th} \
         --gene_names ${gene_names} \
+        --reference ${ref} \
+        --full_results ${full_output}
+        """
+}
+
+
+process ColocLbfGwas {
+    scratch '$TMPDIR'
+
+    input:
+        path(overlap_file)
+        path(gwas_ch)
+        val(coloc_th)
+        val(full_output)
+        path(ref)
+
+    output:
+        path "*_coloc_results.txt", emit: colocalizations
+        path "results_summary_per_overlap.txt", emit: summary
+
+    shell:
+        """
+        coloc_gwas_pairs.R \
+        --overlap_file ${overlap_file} \
+        --coloc_threshold ${coloc_th} \
         --reference ${ref} \
         --full_results ${full_output}
         """
@@ -265,7 +338,8 @@ workflow COLOCLBFLEAN {
         ColocLbf_output_ch = ColocLbfLean(data)
 
     emit:
-        ColocLbf_output_ch
+        summary = ColocLbf_output_ch.summary
+        colocalizations = ColocLbf_output_ch.colocalizations
 }
 
 

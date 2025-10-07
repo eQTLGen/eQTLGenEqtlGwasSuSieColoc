@@ -6,6 +6,7 @@ library(data.table)
 library(stringr)
 library(dplyr)
 library(IGUtilityPackage)
+library(GenomicRanges)
 library(argparse)
 
 set.seed(8)
@@ -28,6 +29,12 @@ parser$add_argument("--win_size",
   type = "numeric",
   help = "GWAS window size for defining loci."
 )
+
+parser$add_argument("--locus_def",
+                    choices = c("simple_flank", "merge"),
+                    help = "Locus definition")
+
+
 
 args <- parser$parse_args()
 
@@ -82,6 +89,32 @@ FindLoci <- function(dt, p_thresh = 5e-8, window_size = 500000) {
   ]
 
   return(loci_summary)
+}
+
+merge_gwas_loci <- function(df, pval_thresh = 5e-8, flank = 5e5) {
+
+  # Filter by threshold
+  sig <- df %>% filter(p <= pval_thresh)
+  if (nrow(sig) == 0) return(data.frame())
+
+  # Expand positions into ± flank windows
+  gr <- GRanges(
+    seqnames = sig$chromosome,
+    ranges = IRanges(start = sig$bp - flank,
+                     end   = sig$bp + flank)
+  )
+
+  # Merge overlapping/adjacent windows
+  merged <- reduce(gr)
+
+  # Return as dataframe
+  merged_df <- as.data.frame(merged) %>%
+    dplyr::rename(chromosome = seqnames,
+                  start = start,
+                  end = end) %>%
+    mutate(chromosome = as.character(chromosome))
+
+  return(merged_df)
 }
 
 IdentifyLeadSNPs <- function(data,
@@ -242,22 +275,41 @@ message("Removing HLA region...done!")
 message(paste("Rows in data:", nrow(gwas)))
 
 message("Finding loci...")
-Loci <- IdentifyLeadSNPs(gwas, 
-snp_id_col = "variant_index", 
-snp_chr_col = "chromosome", 
-snp_pos_col = "bp", 
-eff_all_col = "str_allele2", 
-other_all_col = "str_allele1", 
-beta_col = "beta", 
-se_col = "se", 
-loci = FALSE,
-window = 1000000)
+if (args$locus_def == "simple_flank") {
+  message("Using legacy loci definitions")
+  Loci <- IdentifyLeadSNPs(gwas,
+                           snp_id_col = "variant_index",
+                           snp_chr_col = "chromosome",
+                           snp_pos_col = "bp",
+                           eff_all_col = "str_allele2",
+                           other_all_col = "str_allele1",
+                           beta_col = "beta",
+                           se_col = "se",
+                           loci = FALSE,
+                           window = 1000000)
 
-Loci <- Loci %>% 
-rowwise() %>% 
-summarise(chromosome = unique(chr), start = pos - 1000000, end = pos + 1000000, locus_id = paste0(chr, ":", start, "_", end)) %>% 
-as.data.table()
+  Loci <- Loci %>%
+    rowwise() %>%
+    summarise(chromosome = unique(chr), start = pos - 1000000, end = pos + 1000000, locus_id = paste0(chr, ":", start, "_", end)) %>%
+    as.data.table()
+} else if (args$locus_def == "merge"){
+  message("Using non-overlapping loci definitions")
+  Loci <- merge_gwas_loci(gwas, pval_thresh = 5e-8, flank = 5e5) %>%
+    mutate(locus_id = paste0(chromosome, ":", start, "_", end)) %>%
+    as.data.table() %>%
+    filter(!(chromosome == 6 & between(start, 28510120, 33480577)),
+           !(chromosome == 6 & between(end, 28510120, 33480577)))
+
+}
 message("Finding loci...done!")
+
+print(Loci)
+
+#
+# Loci <- Loci %>%
+# rowwise() %>%
+# summarise(chromosome = unique(chr), start = pos - 1000000, end = pos + 1000000, locus_id = paste0(chr, ":", start, "_", end)) %>%
+# as.data.table()
 
 rm(gwas)
 gc()
@@ -277,11 +329,13 @@ for (i in seq_len(nrow(Loci))) {
   temp_start <- as.integer(Loci$start[i])
   temp_end <- as.integer(Loci$end[i])
 
-  locus <- gwas %>%
+  locus_pre <- gwas %>%
     filter(chromosome == temp_chr & bp > temp_start & bp < temp_end) %>%
     select(variant_index, chromosome, bp, beta, se, p, N, Ntype) %>%
-    collect() %>%
-    filter(N >= 0.8 * max(N) | Ntype == "derived") %>%
+    collect()
+
+  locus <- locus_pre %>%
+    filter(N >= 0.8 * max(N, na.rm=T) | Ntype == "derived") %>%
     select(-Ntype) %>%
     as.data.table()
 

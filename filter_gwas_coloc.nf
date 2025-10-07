@@ -67,13 +67,13 @@ log.info summary.collect { k,v -> "${k.padRight(21)}: $v" }.join("\n")
 log.info "======================================================="
 
 // Define argument channels
-coloc_file_ch = Channel.fromPath(params.coloc)
+coloc_file_ch = Channel.fromPath(params.coloc).view()
 
 variant_reference = Channel.fromPath(params.variant_reference)
 ld_ch = Channel.fromPath(params.ld_reference, type: 'dir')
 
 workflow {
-       COLOCFILTER(coloc_file_ch, variant_reference, ld_ch)
+       COLOCFILTER(coloc_file_ch.combine(variant_reference).combine(ld_ch))
        COLOCFILTER.out.flatten().collectFile(name: 'EqtlGwasColocSusieResults_withLdRColumn.txt', keepHeader: true, sort: true, storeDir: "${params.OutputDir}")
     }
 
